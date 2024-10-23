@@ -1,4 +1,4 @@
-module raft
+module github.com/pelageech/go-raft
 
 go 1.23.1
 

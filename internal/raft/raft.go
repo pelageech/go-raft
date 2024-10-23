@@ -2,8 +2,9 @@ package raft
 
 import (
 	"context"
-	"raft/internal/raft/node"
 	"slices"
+
+	"github.com/pelageech/go-raft/internal/raft/node"
 
 	"golang.org/x/sync/errgroup"
 )
