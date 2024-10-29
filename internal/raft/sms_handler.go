@@ -70,37 +70,38 @@ func (n *Node) voteHandler(msg sms.Vote) {
 	}
 }
 
-func (n *Node) heartBeatHandler(msg sms.HeartBeat, timeNow time.Time) {
-	if n.term == msg.Term && n.role == Leader {
-		panic("there are two leaders!")
-	}
-	n.voted = false
-	n.updateTerm(msg.GetTerm(), timeNow)
-
-	n.SetRole(Follower)
-}
-
 func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 	n.updateTerm(msg.GetTerm(), timeNow)
 	n.voted = false
-	n.SetRole(Follower)
 
 	if n.term < msg.Term {
 		n.term = msg.Term
 	}
 	if msg.CommitIndex > n.journal.CommitIndex() {
-		if !n.journal.Commit() && msg.PrevIndex > n.journal.PrevIndex() {
-			_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntriesResponse{
-				From:       n.ID().String(),
-				To:         msg.From,
-				Term:       n.term,
-				Success:    false,
-				MatchIndex: n.journal.CommitIndex(),
+		if len(msg.Entries) != 0 {
+			_ = n.journal.Put(journal.Message{
+				Term:  msg.Term,
+				Index: msg.PrevIndex,
+				Data:  []byte(msg.Entries[0].Data),
 			})
-			return
+		}
+		if n.journal.PrevIndex() > n.journal.CommitIndex() {
+			n.logger.Infof(">>>")
+			if n.journal.Commit() {
+				_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntriesResponse{
+					From:       n.ID().String(),
+					To:         msg.From,
+					Term:       n.term,
+					Success:    true,
+					MatchIndex: n.journal.CommitIndex(),
+				})
+				return
+			}
+
 		}
 	}
-	if msg.CommitIndex == n.journal.CommitIndex() && n.journal.Get(msg.CommitIndex).Term == msg.PrevTerm {
+	if msg.CommitIndex == n.journal.CommitIndex() && n.journal.Get(n.journal.CommitIndex()).Term == msg.PrevTerm {
+		n.logger.Infof("===")
 		if len(msg.Entries) > 0 {
 			_ = n.journal.Put(journal.Message{
 				Term:  msg.Term,
@@ -117,7 +118,7 @@ func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 		})
 		return
 	}
-	n.logger.Warn("FDFDF")
+	n.logger.Infof("<<<")
 	_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntriesResponse{
 		From:       n.ID().String(),
 		To:         msg.From,
@@ -129,77 +130,91 @@ func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 
 func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeNow time.Time) {
 	if msg.Success {
-		if msg.MatchIndex == n.journal.PrevIndex() && n.journal.PrevIndex() != n.journal.CommitIndex() {
-			n.currentVotes++
-			if n.currentVotes >= (len(n.votePool)+1)/2 {
-				n.logger.Infof("committed %v", n.journal.Last())
-				n.journal.Commit()
-				_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
-					From:        n.ID().String(),
-					To:          msg.From,
-					Term:        n.term,
-					PrevIndex:   n.journal.PrevIndex(),
-					PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
-					CommitIndex: n.journal.CommitIndex(),
-					Entries:     nil,
-				})
-				return
-			}
-		}
-		if n.journal.CommitIndex() > msg.MatchIndex {
-			_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
+		if msg.MatchIndex < n.journal.CommitIndex() {
+			n.logger.Info("<<<<<<")
+			n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
 				From:        n.ID().String(),
 				To:          msg.From,
 				Term:        n.term,
 				PrevIndex:   msg.MatchIndex + 1,
-				PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
-				CommitIndex: msg.MatchIndex + 1,
+				PrevTerm:    n.journal.Get(msg.MatchIndex + 1).Term,
+				CommitIndex: n.journal.CommitIndex(),
 				Entries: []sms.Entry[string]{
 					{
-						Data: string(n.journal.Get(msg.MatchIndex + 1).Data),
 						Term: n.journal.Get(msg.MatchIndex + 1).Term,
+						Data: string(n.journal.Get(msg.MatchIndex + 1).Data),
 					},
 				},
 			})
 			return
 		}
-		var entry []sms.Entry[string]
-		select {
-		case v := <-n.updaters:
-			entry = append(entry, sms.Entry[string]{
-				Data: v,
-				Term: n.term,
+		if msg.MatchIndex == n.journal.CommitIndex() {
+			n.logger.Info("======")
+			var entries []sms.Entry[string]
+			if n.voteUpdate.Done {
+				select {
+				case v := <-n.updaters:
+					entries = append(entries, sms.Entry[string]{
+						Term: n.term,
+						Data: v,
+					})
+					n.journal.Put(journal.Message{
+						Term:  n.term,
+						Index: n.journal.Len(),
+						Data:  []byte(v),
+					})
+					n.voteUpdate = NewVoteUpdate(entries)
+				default:
+				}
+			} else {
+				if !n.voteUpdate.Nodes[msg.GetFrom()] {
+					entries = n.voteUpdate.Entry
+				}
+			}
+			n.logger.Info("!!======!!")
+			n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
+				From:        n.ID().String(),
+				To:          msg.From,
+				Term:        n.term,
+				PrevIndex:   msg.MatchIndex,
+				PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
+				CommitIndex: n.journal.CommitIndex(),
+				Entries:     entries,
 			})
-			_ = n.journal.Put(journal.Message{
-				Term:  n.term,
-				Index: n.journal.Len(),
-				Data:  []byte(v),
-			})
-		default:
+
+			return
 		}
-		n.logger.Infof("%v", n.journal.Len())
-		_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
+		if !n.voteUpdate.Nodes[msg.GetFrom()] {
+			n.voteUpdate.Nodes[msg.GetFrom()] = true
+			n.voteUpdate.Count++
+			if n.voteUpdate.Count >= (len(n.nodes)+1)/2 {
+				n.voteUpdate.Done = true
+				n.journal.Commit()
+			}
+		}
+		n.logger.Info("!!!!!!!!!!!")
+		n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
 			From:        n.ID().String(),
 			To:          msg.From,
 			Term:        n.term,
 			PrevIndex:   msg.MatchIndex,
 			PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
 			CommitIndex: n.journal.CommitIndex(),
-			Entries:     entry,
+			Entries:     nil,
 		})
 		return
 	}
-	_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
+	n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
 		From:        n.ID().String(),
 		To:          msg.From,
 		Term:        n.term,
 		PrevIndex:   msg.MatchIndex - 1,
-		PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
+		PrevTerm:    n.journal.Get(msg.MatchIndex - 1).Term,
 		CommitIndex: n.journal.CommitIndex(),
 		Entries: []sms.Entry[string]{
 			{
-				Data: string(n.journal.Get(msg.MatchIndex).Data),
-				Term: n.journal.Get(msg.MatchIndex).Term,
+				Term: n.journal.Get(msg.MatchIndex - 1).Term,
+				Data: string(n.journal.Get(msg.MatchIndex - 1).Data),
 			},
 		},
 	})

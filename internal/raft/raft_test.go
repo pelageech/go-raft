@@ -13,7 +13,6 @@ func TestRaft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 	done := make(chan struct{}, 1)
@@ -34,7 +33,7 @@ func TestRaft(t *testing.T) {
 
 	// turn off first leader
 	firstLeader.turnOff <- struct{}{}
-	time.Sleep(10 * time.Second)
+	time.Sleep(15 * time.Second)
 	require.Eventually(t, func() bool {
 		leader = findLeader(raft)
 		return leader != nil
@@ -58,18 +57,19 @@ func TestRaft(t *testing.T) {
 }
 
 func TestLog(t *testing.T) {
-	raft, err := New(3)
+	raft, err := New(5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 
 	done := make(chan struct{}, 1)
 	go func() {
 		defer func() { done <- struct{}{} }()
 		_ = raft.Run(ctx)
 	}()
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	var leader *Node
 	require.Eventually(t, func() bool {
@@ -78,10 +78,18 @@ func TestLog(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond)
 	t.Log("put aboba")
 	leader.Request("aboba")
-
-	time.Sleep(5 * time.Second)
+	first := leader
+	time.Sleep(3 * time.Second)
+	leader.turnOff <- struct{}{}
+	time.Sleep(7 * time.Second)
+	require.Eventually(t, func() bool {
+		leader = findLeader(raft)
+		return leader != nil
+	}, 5*time.Second, 100*time.Millisecond)
 	leader.Request("aboba2")
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
+	<-first.turnOff
+	time.Sleep(3 * time.Second)
 	for _, node := range raft.nodes {
 		t.Log(node.journal.Get(1))
 		t.Log(node.journal.Len())

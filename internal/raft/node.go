@@ -16,10 +16,24 @@ import (
 )
 
 type (
-	ID   fmt.Stringer
-	Role int
-	SMS  = sms.Message
+	ID         fmt.Stringer
+	Role       int
+	SMS        = sms.Message
+	VoteUpdate struct {
+		Entry []sms.Entry[string]
+		Count int
+		Nodes map[ID]bool
+		Done  bool
+	}
 )
+
+func NewVoteUpdate(entry []sms.Entry[string]) VoteUpdate {
+	return VoteUpdate{
+		Entry: entry,
+		Count: 0,
+		Nodes: make(map[ID]bool),
+	}
+}
 
 const (
 	Follower Role = iota
@@ -41,6 +55,7 @@ type Node struct {
 	updaters            chan string
 	indexPool           map[ID]*time.Ticker
 	nodePoolWait        map[ID]chan struct{}
+	voteUpdate          VoteUpdate
 
 	journal *journal.Journal
 
@@ -51,7 +66,7 @@ type Node struct {
 }
 
 const _messageBufferSise = 1000
-const _factor = 1
+const _factor = 16
 
 func NewNode(nodes iter.Seq[*Node]) *Node {
 	n := &Node{
@@ -69,10 +84,11 @@ func NewNode(nodes iter.Seq[*Node]) *Node {
 		turnOff:             make(chan struct{}, 1),
 		nodePoolWait:        make(map[ID]chan struct{}, 1),
 		indexPool:           make(map[ID]*time.Ticker),
+		voteUpdate:          VoteUpdate{Done: true},
 	}
 	for node := range nodes {
 		n.nodes[node.id] = node
-		n.indexPool[node.id] = time.NewTicker(time.Second / _factor)
+		n.indexPool[node.id] = time.NewTicker(time.Second / _factor / 2)
 	}
 	return n
 }
@@ -126,13 +142,13 @@ loop:
 				if n.role != Leader {
 					continue
 				}
-				go func() {
-					select {
-					case <-n.indexPool[msg.GetFrom()].C:
-						n.appendEntriesResponseHandler(v, now)
-					case <-ctx.Done():
-					}
-				}()
+				// go func() {
+				// 	select {
+				<-n.indexPool[msg.GetFrom()].C
+				n.appendEntriesResponseHandler(v, now)
+				// 	case <-ctx.Done():
+				// 	}
+				// }()
 			}
 		case <-ticker.C:
 			now := time.Now()
@@ -161,7 +177,6 @@ func (n *Node) IsLeaderDead(timeNow time.Time) bool {
 }
 
 func (n *Node) Send(sms SMS) error {
-	n.logger.Infof("%v: send sms `%s`", n.ID(), sms)
 	n.messages <- sms
 	return nil
 }
