@@ -1,12 +1,11 @@
 package raft
 
 import (
+	"time"
+
 	"github.com/pelageech/go-raft/internal/journal"
 	"github.com/pelageech/go-raft/internal/raft/sms"
-	"time"
 )
-
-const _deltaAddLeaderDeadline = 2 * time.Second
 
 func (n *Node) requestVoteHandle(msg sms.RequestVote, timeNow time.Time) {
 	to := n.nodes[msg.GetFrom()]
@@ -57,6 +56,17 @@ func (n *Node) voteHandler(msg sms.Vote) {
 		n.logger.Infof("a leader is %v", n.ID())
 		n.SetRole(Leader)
 		n.leaderHeartDeadline = time.Time{}
+		for _, node := range n.nodes {
+			_ = node.Send(sms.AppendEntries{
+				From:        n.ID().String(),
+				To:          node.ID().String(),
+				Term:        n.term,
+				PrevIndex:   n.journal.PrevIndex(),
+				PrevTerm:    n.journal.Get(n.journal.PrevIndex()).Term,
+				CommitIndex: n.journal.CommitIndex(),
+				Entries:     nil,
+			})
+		}
 	}
 }
 
@@ -72,6 +82,9 @@ func (n *Node) heartBeatHandler(msg sms.HeartBeat, timeNow time.Time) {
 
 func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 	n.updateTerm(msg.GetTerm(), timeNow)
+	n.voted = false
+	n.SetRole(Follower)
+
 	if n.term < msg.Term {
 		n.term = msg.Term
 	}
@@ -100,7 +113,7 @@ func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 			To:         msg.From,
 			Term:       n.term,
 			Success:    true,
-			MatchIndex: n.journal.Len() - 1,
+			MatchIndex: n.journal.PrevIndex(),
 		})
 		return
 	}
@@ -121,6 +134,16 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 			if n.currentVotes >= (len(n.votePool)+1)/2 {
 				n.logger.Infof("committed %v", n.journal.Last())
 				n.journal.Commit()
+				_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
+					From:        n.ID().String(),
+					To:          msg.From,
+					Term:        n.term,
+					PrevIndex:   n.journal.PrevIndex(),
+					PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
+					CommitIndex: n.journal.CommitIndex(),
+					Entries:     nil,
+				})
+				return
 			}
 		}
 		if n.journal.CommitIndex() > msg.MatchIndex {
@@ -140,6 +163,21 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 			})
 			return
 		}
+		var entry []sms.Entry[string]
+		select {
+		case v := <-n.updaters:
+			entry = append(entry, sms.Entry[string]{
+				Data: v,
+				Term: n.term,
+			})
+			_ = n.journal.Put(journal.Message{
+				Term:  n.term,
+				Index: n.journal.Len(),
+				Data:  []byte(v),
+			})
+		default:
+		}
+		n.logger.Infof("%v", n.journal.Len())
 		_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntries{
 			From:        n.ID().String(),
 			To:          msg.From,
@@ -147,7 +185,7 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 			PrevIndex:   msg.MatchIndex,
 			PrevTerm:    n.journal.Get(msg.MatchIndex).Term,
 			CommitIndex: n.journal.CommitIndex(),
-			Entries:     nil,
+			Entries:     entry,
 		})
 		return
 	}

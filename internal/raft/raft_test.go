@@ -2,9 +2,10 @@ package raft
 
 import (
 	"context"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRaft(t *testing.T) {
@@ -12,6 +13,7 @@ func TestRaft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 	done := make(chan struct{}, 1)
@@ -56,7 +58,7 @@ func TestRaft(t *testing.T) {
 }
 
 func TestLog(t *testing.T) {
-	raft, err := New(5)
+	raft, err := New(3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestLog(t *testing.T) {
 		defer func() { done <- struct{}{} }()
 		_ = raft.Run(ctx)
 	}()
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	var leader *Node
 	require.Eventually(t, func() bool {

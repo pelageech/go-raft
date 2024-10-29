@@ -3,13 +3,14 @@ package raft
 import (
 	"context"
 	"fmt"
-	"github.com/charmbracelet/log"
-	"github.com/pelageech/go-raft/internal/journal"
-	"github.com/pelageech/go-raft/internal/raft/sms"
 	"iter"
 	"math/rand/v2"
 	"os"
 	"time"
+
+	"github.com/charmbracelet/log"
+	"github.com/pelageech/go-raft/internal/journal"
+	"github.com/pelageech/go-raft/internal/raft/sms"
 
 	"github.com/google/uuid"
 )
@@ -38,7 +39,7 @@ type Node struct {
 	leaderHeartDeadline time.Time
 	messages            chan SMS
 	updaters            chan string
-	indexPool           map[int]int
+	indexPool           map[ID]*time.Ticker
 	nodePoolWait        map[ID]chan struct{}
 
 	journal *journal.Journal
@@ -50,7 +51,7 @@ type Node struct {
 }
 
 const _messageBufferSise = 1000
-const _factor = 8
+const _factor = 1
 
 func NewNode(nodes iter.Seq[*Node]) *Node {
 	n := &Node{
@@ -67,9 +68,11 @@ func NewNode(nodes iter.Seq[*Node]) *Node {
 		leaderHeartDeadline: time.Now().Add(rand.N(5 * time.Second)),
 		turnOff:             make(chan struct{}, 1),
 		nodePoolWait:        make(map[ID]chan struct{}, 1),
+		indexPool:           make(map[ID]*time.Ticker),
 	}
 	for node := range nodes {
 		n.nodes[node.id] = node
+		n.indexPool[node.id] = time.NewTicker(time.Second / _factor)
 	}
 	return n
 }
@@ -91,14 +94,18 @@ func (n *Node) Role() Role {
 }
 
 func (n *Node) Run(ctx context.Context) error {
+	defer func() {
+		if r := recover(); r != nil {
+			panic(fmt.Sprintf("id:%v, panic: %v", n.id, r))
+		}
+	}()
 	ticker := time.NewTicker(time.Second / _factor)
 
 loop:
 	for {
-		select {
-		case n.turnOff <- struct{}{}:
-			<-n.turnOff
-		}
+		n.turnOff <- struct{}{}
+		<-n.turnOff
+
 		select {
 		case <-ctx.Done():
 			break loop
@@ -115,19 +122,24 @@ loop:
 				n.voteHandler(v)
 			case sms.AppendEntries:
 				n.appendEntriesHandler(v, now)
-				<-time.After(time.Second / _factor)
 			case sms.AppendEntriesResponse:
 				if n.role != Leader {
 					continue
 				}
-				n.appendEntriesResponseHandler(v, now)
+				go func() {
+					select {
+					case <-n.indexPool[msg.GetFrom()].C:
+						n.appendEntriesResponseHandler(v, now)
+					case <-ctx.Done():
+					}
+				}()
 			}
 		case <-ticker.C:
 			now := time.Now()
-			if n.role == Leader {
-				n.heartBeat()
-				break
-			}
+			// if n.role == Leader {
+			// 	n.heartBeat()
+			// 	break
+			// }
 
 			if n.role == Candidate {
 				n.retryRequestVotes()
@@ -149,6 +161,7 @@ func (n *Node) IsLeaderDead(timeNow time.Time) bool {
 }
 
 func (n *Node) Send(sms SMS) error {
+	n.logger.Infof("%v: send sms `%s`", n.ID(), sms)
 	n.messages <- sms
 	return nil
 }
@@ -177,6 +190,7 @@ func (n *Node) Add(node *Node) error {
 	}
 	n.nodes[node.id] = node
 	n.votePool[node.ID()] = false
+	n.indexPool[node.ID()] = time.NewTicker(time.Second / _factor)
 
 	return nil
 }
@@ -196,44 +210,6 @@ func (n *Node) retryRequestVotes() {
 			From: n.ID().String(),
 			To:   id.String(),
 			Term: n.term,
-		})
-	}
-}
-
-func (n *Node) heartBeat() {
-	n.currentVotes = 0
-	var entries []sms.Entry[string]
-	select {
-	case v := <-n.updaters:
-		entries = []sms.Entry[string]{
-			{
-				Data: v,
-				Term: n.term,
-			},
-		}
-	default:
-	}
-	if len(entries) == 0 {
-		return
-	}
-	for _, node := range n.nodes {
-		msg := sms.AppendEntries{
-			From:        n.ID().String(),
-			To:          node.ID().String(),
-			Term:        n.term,
-			PrevIndex:   n.journal.PrevIndex(),
-			PrevTerm:    n.journal.PrevTerm(),
-			CommitIndex: n.journal.CommitIndex(),
-			Entries:     entries,
-		}
-		_ = node.Send(msg)
-		n.logger.Error(msg)
-	}
-	if len(entries) > 0 {
-		n.journal.Put(journal.Message{
-			Term:  n.term,
-			Index: n.journal.Len(),
-			Data:  []byte(entries[0].Data),
 		})
 	}
 }
