@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"github.com/charmbracelet/log"
+	"github.com/pelageech/go-raft/internal/journal"
+	"github.com/pelageech/go-raft/internal/raft/sms"
 	"iter"
 	"math/rand/v2"
 	"os"
-	"raft/internal/journal"
-	"raft/internal/raft/sms"
 	"time"
 
 	"github.com/google/uuid"

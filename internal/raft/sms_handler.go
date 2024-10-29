@@ -1,8 +1,8 @@
 package raft
 
 import (
-	"raft/internal/journal"
-	"raft/internal/raft/sms"
+	"github.com/pelageech/go-raft/internal/journal"
+	"github.com/pelageech/go-raft/internal/raft/sms"
 	"time"
 )
 
