@@ -1,20 +1,36 @@
 package journal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"iter"
+	"strconv"
+)
 
 type Message struct {
 	Term  int
 	Index int
-	Data  []byte
+	Data  any
+}
+
+func (m Message) String() string {
+	return fmt.Sprintf("%d:{TERM:%d, DATA:%s}", m.Index, m.Term, strconv.Quote(fmt.Sprint(m.Data)))
+}
+
+type Processor[K comparable, V any] interface {
+	Process(any) (any, error)
+	Dump() map[K]V
+	Get(K) (V, bool)
 }
 
 type Journal struct {
 	storage     []Message
 	commitIndex int
+	processor   Processor[any, any]
 }
 
-func NewJournal() *Journal {
-	return &Journal{commitIndex: 0, storage: []Message{
+func NewJournal(processor Processor[any, any]) *Journal {
+	return &Journal{commitIndex: 0, processor: processor, storage: []Message{
 		{
 			Term: -1,
 			Data: []byte{0xDE, 0xAD, 0xBE, 0xEF},
@@ -51,6 +67,7 @@ func (j *Journal) Commit() bool {
 		return false
 	}
 	j.commitIndex++
+	_, _ = j.processor.Process(j.storage[j.commitIndex].Data)
 	return true
 }
 
@@ -76,4 +93,18 @@ func (j *Journal) Get(i int) Message {
 
 func (j *Journal) Last() Message {
 	return j.storage[len(j.storage)-1]
+}
+
+func (j *Journal) Entries() iter.Seq[Message] {
+	return func(yield func(Message) bool) {
+		for _, entry := range j.storage {
+			if !yield(entry) {
+				return
+			}
+		}
+	}
+}
+
+func (j *Journal) Proc() Processor[any, any] {
+	return j.processor
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/pelageech/go-raft/internal/journal"
+	raftmap "github.com/pelageech/go-raft/internal/map"
 	"github.com/pelageech/go-raft/internal/raft/sms"
 
 	"github.com/google/uuid"
@@ -17,23 +18,25 @@ import (
 
 type (
 	ID         fmt.Stringer
-	Role       int
 	SMS        = sms.Message
 	VoteUpdate struct {
-		Entry []sms.Entry[string]
+		Entry []sms.Entry[any]
 		Count int
 		Nodes map[ID]bool
 		Done  bool
 	}
 )
 
-func NewVoteUpdate(entry []sms.Entry[string]) VoteUpdate {
+func NewVoteUpdate(entry []sms.Entry[any]) VoteUpdate {
 	return VoteUpdate{
 		Entry: entry,
 		Count: 0,
 		Nodes: make(map[ID]bool),
 	}
 }
+
+//go:generate go run golang.org/x/tools/cmd/stringer@latest -type=Role
+type Role int
 
 const (
 	Follower Role = iota
@@ -52,10 +55,11 @@ type Node struct {
 	maxDelta            time.Duration
 	leaderHeartDeadline time.Time
 	messages            chan SMS
-	updaters            chan string
+	updaters            chan any
 	indexPool           map[ID]*time.Ticker
 	nodePoolWait        map[ID]chan struct{}
 	voteUpdate          VoteUpdate
+	waitRequest         chan any
 
 	journal *journal.Journal
 
@@ -71,13 +75,13 @@ const _factor = 16
 func NewNode(nodes iter.Seq[*Node]) *Node {
 	n := &Node{
 		id:                  uuid.New(),
-		journal:             journal.NewJournal(),
+		journal:             journal.NewJournal(raftmap.New[any, any]()),
 		term:                -1,
 		role:                Follower,
 		nodes:               make(map[ID]*Node),
 		votePool:            make(map[ID]bool),
 		messages:            make(chan SMS, _messageBufferSise),
-		updaters:            make(chan string, _messageBufferSise),
+		updaters:            make(chan any, _messageBufferSise),
 		logger:              log.New(os.Stdout),
 		maxDelta:            randDelta(),
 		leaderHeartDeadline: time.Now().Add(rand.N(5 * time.Second)),
@@ -85,6 +89,7 @@ func NewNode(nodes iter.Seq[*Node]) *Node {
 		nodePoolWait:        make(map[ID]chan struct{}, 1),
 		indexPool:           make(map[ID]*time.Ticker),
 		voteUpdate:          VoteUpdate{Done: true},
+		waitRequest:         make(chan any, _messageBufferSise),
 	}
 	for node := range nodes {
 		n.nodes[node.id] = node
@@ -152,10 +157,15 @@ loop:
 			}
 		case <-ticker.C:
 			now := time.Now()
-			// if n.role == Leader {
-			// 	n.heartBeat()
-			// 	break
-			// }
+			if n.role == Leader {
+				for _, node := range n.nodes {
+					select {
+					case v := <-node.waitRequest:
+						n.updaters <- v
+					default:
+					}
+				}
+			}
 
 			if n.role == Candidate {
 				n.retryRequestVotes()
@@ -255,6 +265,10 @@ func (n *Node) updateTerm(term int, timeNow time.Time) {
 	n.leaderHeartDeadline = timeNow.Add(n.maxDelta)
 }
 
-func (n *Node) Request(s string) {
-	n.updaters <- s
+func (n *Node) Request(s any) {
+	if n.role == Leader {
+		n.updaters <- s
+		return
+	}
+	n.waitRequest <- s
 }

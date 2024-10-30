@@ -2,6 +2,7 @@ package sms
 
 import (
 	"fmt"
+
 	"github.com/google/uuid"
 )
 
@@ -99,18 +100,18 @@ func (v HeartBeat) String() string {
 }
 
 type Entry[T any] struct {
-	Data string `json:"data"`
-	Term int    `json:"term"`
+	Data T   `json:"data"`
+	Term int `json:"term"`
 }
 
 type AppendEntries struct {
-	From        string          `json:"from"`
-	To          string          `json:"to"`
-	Term        int             `json:"term"`
-	PrevIndex   int             `json:"prev_index"`
-	PrevTerm    int             `json:"prev_term"`
-	CommitIndex int             `json:"commit_index"`
-	Entries     []Entry[string] `json:"entries"`
+	From        string       `json:"from"`
+	To          string       `json:"to"`
+	Term        int          `json:"term"`
+	PrevIndex   int          `json:"prev_index"`
+	PrevTerm    int          `json:"prev_term"`
+	CommitIndex int          `json:"commit_index"`
+	Entries     []Entry[any] `json:"entries"`
 }
 
 func (v AppendEntries) GetTerm() int {

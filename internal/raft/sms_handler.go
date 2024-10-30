@@ -7,6 +7,8 @@ import (
 	"github.com/pelageech/go-raft/internal/raft/sms"
 )
 
+type entry = sms.Entry[any]
+
 func (n *Node) requestVoteHandle(msg sms.RequestVote, timeNow time.Time) {
 	to := n.nodes[msg.GetFrom()]
 
@@ -82,7 +84,7 @@ func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 			_ = n.journal.Put(journal.Message{
 				Term:  msg.Term,
 				Index: msg.PrevIndex,
-				Data:  []byte(msg.Entries[0].Data),
+				Data:  msg.Entries[0].Data,
 			})
 		}
 		if n.journal.PrevIndex() > n.journal.CommitIndex() {
@@ -106,7 +108,7 @@ func (n *Node) appendEntriesHandler(msg sms.AppendEntries, timeNow time.Time) {
 			_ = n.journal.Put(journal.Message{
 				Term:  msg.Term,
 				Index: n.journal.Len(),
-				Data:  []byte(msg.Entries[0].Data),
+				Data:  msg.Entries[0].Data,
 			})
 		}
 		_ = n.nodes[msg.GetFrom()].Send(sms.AppendEntriesResponse{
@@ -139,10 +141,10 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 				PrevIndex:   msg.MatchIndex + 1,
 				PrevTerm:    n.journal.Get(msg.MatchIndex + 1).Term,
 				CommitIndex: n.journal.CommitIndex(),
-				Entries: []sms.Entry[string]{
+				Entries: []entry{
 					{
 						Term: n.journal.Get(msg.MatchIndex + 1).Term,
-						Data: string(n.journal.Get(msg.MatchIndex + 1).Data),
+						Data: n.journal.Get(msg.MatchIndex + 1).Data,
 					},
 				},
 			})
@@ -150,18 +152,18 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 		}
 		if msg.MatchIndex == n.journal.CommitIndex() {
 			n.logger.Info("======")
-			var entries []sms.Entry[string]
+			var entries []entry
 			if n.voteUpdate.Done {
 				select {
 				case v := <-n.updaters:
-					entries = append(entries, sms.Entry[string]{
+					entries = append(entries, entry{
 						Term: n.term,
 						Data: v,
 					})
 					n.journal.Put(journal.Message{
 						Term:  n.term,
 						Index: n.journal.Len(),
-						Data:  []byte(v),
+						Data:  v,
 					})
 					n.voteUpdate = NewVoteUpdate(entries)
 				default:
@@ -211,10 +213,10 @@ func (n *Node) appendEntriesResponseHandler(msg sms.AppendEntriesResponse, timeN
 		PrevIndex:   msg.MatchIndex - 1,
 		PrevTerm:    n.journal.Get(msg.MatchIndex - 1).Term,
 		CommitIndex: n.journal.CommitIndex(),
-		Entries: []sms.Entry[string]{
+		Entries: []entry{
 			{
 				Term: n.journal.Get(msg.MatchIndex - 1).Term,
-				Data: string(n.journal.Get(msg.MatchIndex - 1).Data),
+				Data: n.journal.Get(msg.MatchIndex - 1).Data,
 			},
 		},
 	})
